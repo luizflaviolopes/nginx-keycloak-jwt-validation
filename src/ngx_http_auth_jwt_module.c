@@ -25,10 +25,6 @@ typedef struct {
   ngx_int_t  acct_num_var_index;
 } ngx_http_auth_jwt_loc_conf_t;
 
-typedef struct {
-  ngx_int_t authenticated;
-} ngx_http_auth_jwt_vars_t;
-
 struct MemoryStruct {
   char *memory;
   size_t size;
@@ -40,6 +36,11 @@ typedef struct jwk_key {
     unsigned char * e;
     int eLen;
 } jwk_key;
+
+typedef struct {
+    ngx_int_t     status;
+    u_char     *acctNum;
+} ngx_http_auth_jwt_ctx_t;
 
 
 static ngx_int_t ngx_http_auth_jwt_handler(ngx_http_request_t *r);
@@ -58,10 +59,11 @@ static int Base64decode(char *bufplain, const char *bufcoded);
 static int Base64decode_len(const char *bufcoded);
 static int UpdateRequest(ngx_http_request_t  *r, char * acctNum);
 static int ProcessAcctNumUriRequest(ngx_http_request_t  *r, char * acctNum);
+static void ProcessAcctNumBodyRequest(ngx_http_request_t  *r);
+static void RewriteRequestFromFile(ngx_file_t *dst,ngx_file_t *src, u_char *acctNum, ngx_log_t *log, ngx_pool_t *pool );
 
 // Configuration functions
 static ngx_int_t ngx_http_auth_jwt_init(ngx_conf_t *cf);
-static ngx_int_t ngx_http_auth_jwt_init_vars(ngx_conf_t *cf);
 static void * ngx_http_auth_jwt_create_conf(ngx_conf_t *cf);
 static char * ngx_http_auth_jwt_merge_conf(ngx_conf_t *cf, void *parent, void *child);
 static char * ngx_conf_set_jwt_validation_flag(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
@@ -151,17 +153,13 @@ static char * ngx_conf_set_jwt_validation_flag(ngx_conf_t *cf, ngx_command_t *cm
     *flag = NGX_CONF_UNSET;
   }
 
-  ngx_str_t name = ngx_string("foo");
-  ngx_int_t *act_num = &ajcf->acct_num_var_index;
-  *act_num = ngx_http_get_variable_index(cf, &name);
-
   return NGX_CONF_OK;
 }
 
 
 
 static ngx_http_module_t ngx_http_auth_jwt_module_ctx = {
-  ngx_http_auth_jwt_init_vars, /* preconfiguration */
+  NULL, /* preconfiguration */
   ngx_http_auth_jwt_init,      /* postconfiguration */
 
   NULL,                        /* create main configuration */
@@ -189,41 +187,8 @@ ngx_module_t ngx_http_auth_jwt_module = {
   NGX_MODULE_V1_PADDING
 };
 
-static ngx_int_t
-ngx_http_variable_connection(ngx_http_request_t *r,
-    ngx_http_variable_value_t *v, uintptr_t data)
-{
-
-    ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: variable getting handler");
-    u_char  *p;
-
-    p = ngx_pnalloc(r->pool, sizeof(ngx_http_auth_jwt_vars_t));
-    if (p == NULL) {
-        return NGX_ERROR;
-    }
-
-    ((ngx_http_auth_jwt_vars_t *)p)->authenticated = NGX_JWT_NOT_AUTHENTICATED;
-
-    v->len = 1;
-    v->valid = 1;
-    v->no_cacheable = 0;
-    v->not_found = 0;
-    v->data = p;
-
-    return NGX_OK;
-}
 
 
-static ngx_int_t ngx_http_auth_jwt_init_vars(ngx_conf_t *cf)
-{
-  ngx_str_t  name = ngx_string("foo");
-
-  ngx_http_variable_t  * v = ngx_http_add_variable(cf,&name ,NGX_HTTP_VAR_CHANGEABLE);
-  v ->get_handler = ngx_http_variable_connection;
-  // v ->set_handler = ngx_http_variable_connection_set;
-
-  return NGX_OK;
-}
 static ngx_int_t ngx_http_auth_jwt_init(ngx_conf_t *cf)
 {
   ngx_http_handler_pt        *h;
@@ -276,24 +241,29 @@ static ngx_int_t ngx_http_auth_jwt_handler(ngx_http_request_t *r)
 {
 
     ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: STARTING...");
+
+  // ngx_str_t newuri = ngx_string("acctNum=260001-1221680325&company=paragonmeds&customerId=99999");
+  // r->args = newuri;
+
+  // return NGX_OK;
     
     const ngx_http_auth_jwt_loc_conf_t *conf;
     conf = ngx_http_get_module_loc_conf(r, ngx_http_auth_jwt_module);
 
-    ngx_http_variable_value_t  *v = ngx_http_get_indexed_variable(r,conf->acct_num_var_index);
-    ngx_http_auth_jwt_vars_t * data = (ngx_http_auth_jwt_vars_t *)v->data;
+    // ngx_http_variable_value_t  *v = ngx_http_get_indexed_variable(r,conf->acct_num_var_index);
+    // ngx_http_auth_jwt_vars_t * data = (ngx_http_auth_jwt_vars_t *)v->data;
 
-    ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: var data = %d", data->authenticated);
-    if(r->uri.len > 0)
-    ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: uri requested = %s", r->uri.data);
-    if(r->args.len > 0)
-    ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: args requested = %s", r->args.data);
+    // ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: var data = %d", data->authenticated);
+    // if(r->uri.len > 0)
+    // ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: uri requested = %s", r->uri.data);
+    // if(r->args.len > 0)
+    // ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: args requested = %s", r->args.data);
 
-    if(data->authenticated > 0)
-    {
-      ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: ending the request");
-      return NGX_OK;
-    }
+    // if(data->authenticated > 0)
+    // {
+    //   ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: ending the request");
+    //   return NGX_OK;
+    // }
   
     u_char *jwt_data;
 
@@ -309,7 +279,8 @@ static ngx_int_t ngx_http_auth_jwt_handler(ngx_http_request_t *r)
   // Pass through if "auth_jwt" is "off"
   if (conf->jwt_validation_flag == NGX_JWT_VALIDATION_OFF)
   {
-    return UpdateRequest(r,"555-55555-0-1H");
+
+    return UpdateRequest(r,"123-4-0006");
     ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: flag is off");
     return NGX_DECLINED;
 
@@ -350,7 +321,6 @@ static ngx_int_t ngx_http_auth_jwt_handler(ngx_http_request_t *r)
       return NGX_HTTP_UNAUTHORIZED;
     }
   }
-
 
   return NGX_OK;
 
@@ -509,18 +479,21 @@ static ngx_int_t validation_jwt_session(ngx_http_request_t  *r, char * plain_jwt
     jwt_t *jwt = NULL;
     char *opidcf_url_end = "/protocol/openid-connect/userinfo";
 
+
     jwt_decode(&jwt, plain_jwt, NULL,0);
     const char *opidcf_base_url = jwt_get_grant(jwt, "iss");
     if(opidcf_base_url == NULL)
     {
       return NGX_DECLINED;
     }
+    ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: step 1" );
 
     char *opidcf_url = combineStrings(r->pool,(char *)opidcf_base_url, opidcf_url_end);
     
     char * opidcf_resp;
     PerformHttpRequest(r->pool,r->connection->log, &opidcf_resp,(char*)opidcf_url, plain_jwt);
     
+    ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: step 2" );
     char *acctNum = ParseAndGetJsonString(r->connection->log, opidcf_resp,"acctNum");
     if(acctNum == NULL)
     {
@@ -529,6 +502,8 @@ static ngx_int_t validation_jwt_session(ngx_http_request_t  *r, char * plain_jwt
     }
 
     ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: session is valid. acctNum: %s",acctNum );
+
+    return UpdateRequest(r,acctNum);
 
     return NGX_OK;
 
@@ -897,109 +872,552 @@ static int Base64decode_len(const char *bufcoded)
 
 
 static int UpdateRequest(ngx_http_request_t  *r, char * acctNum){
+    ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: again...");
   // check method
+  if(r->method == NGX_HTTP_GET)
+  {
   // if get request
     return ProcessAcctNumUriRequest(r, acctNum);
-  // if post request?
+
+  }
+  else
+  {
+  // if post request
+
+    ngx_http_auth_jwt_ctx_t       *ctx;       
+    ctx = ngx_http_get_module_ctx(r, ngx_http_auth_jwt_module);
+
+    if (ctx) {
+        return ctx->status;
+    }
+    ctx = ngx_pcalloc(r->pool, sizeof(ngx_http_auth_jwt_ctx_t));
+    if (ctx == NULL) {
+        return NGX_ERROR;
+    }
+
+    ctx->status = NGX_DONE;
+    
+    u_char *newacct = ngx_pcalloc(r->pool, ngx_strlen(acctNum)+1);
+    ngx_memcpy(newacct,acctNum,ngx_strlen(acctNum));
+    ctx->acctNum = newacct;
+
+    ngx_http_set_ctx(r, ctx, ngx_http_auth_jwt_module);
+
+    ngx_int_t rc;
+    rc = ngx_http_read_client_request_body(r, ProcessAcctNumBodyRequest);
+
+
+    if (rc >= NGX_HTTP_SPECIAL_RESPONSE) {
+        return rc;
+    }
+    ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: RC= %O",rc);
+
+
+    ngx_http_finalize_request(r, NGX_DONE);
+    return NGX_DONE;
+
+   
+  }
 
 }
 
 static int ProcessAcctNumUriRequest(ngx_http_request_t  *r, char * acctNum){
 
+  ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: start processing... ");
   
-          ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: start processing... ");
 
-          u_char * path;
+  u_char * path;
 
-          char * query_string_start = strstr((char *)r->uri.data, "?");
-          if(query_string_start != NULL) //has queryString
+  char * query_string_start = strstr((char *)r->uri.data, "?");
+  if(query_string_start != NULL) //has queryString
+  {
+    int path_len = query_string_start - (char *)r->uri.data;
+    path = ngx_pcalloc(r->pool,path_len+1);
+    ngx_memcpy(path, (char *)r->uri.data, path_len);
+  }
+  else
+  {
+    path = ngx_pcalloc(r->pool,r->uri.len+1);
+    ngx_memcpy(path, (char *)r->uri.data, r->uri.len);
+  }
+
+  u_char * query_string;
+
+  if(r->args.len > 0) //if has args
+  {
+      // setting acctNum arg to inject
+      char accnum_arg[8+strlen(acctNum)+1];
+      ngx_memcpy(accnum_arg, "acctNum=", 8);
+      ngx_memcpy((accnum_arg+8), acctNum, strlen(acctNum)+1);
+      int accnum_arg_len = strlen(accnum_arg);
+
+      char * accnum_pos = ngx_strstr((char *)r->args.data, "acctNum=");
+      if(accnum_pos == NULL) // check if does not exist acctNum
+      { 
+          //does not exist and need to be appended to the end
+
+          int qs_len = r->args.len + accnum_arg_len+1;
+          query_string = ngx_pcalloc(r->pool,qs_len+1);
+          ngx_memcpy(query_string,r->args.data,r->args.len);
+          *(query_string+r->args.len) = '&';
+          ngx_memcpy((query_string+r->args.len+1),accnum_arg,accnum_arg_len);
+      }
+      else
+      {
+        // acctNum exist and needs to be replaced to assure it has the correct value
+
+        int fstpt_len = accnum_pos - (char *)r->args.data;
+        char fstpt_part[fstpt_len+1];
+        ngx_memcpy(fstpt_part, (char *)r->args.data, fstpt_len);
+
+        u_char * accnum_end_pos = NULL;
+        size_t i;
+        for(i = fstpt_len; i <= (r->args.len); i++) {
+
+          if(*(r->args.data+i) == '&' )
           {
-            int path_len = query_string_start - (char *)r->uri.data;
-            path = ngx_pcalloc(r->pool,path_len+1);
-            ngx_memcpy(path, (char *)r->uri.data, path_len);
+            accnum_end_pos = r->args.data + i;
+            break;
           }
-          else
-          {
-            path = ngx_pcalloc(r->pool,r->uri.len+1);
-            ngx_memcpy(path, (char *)r->uri.data, r->uri.len);
-          }
+        }
+        if(accnum_end_pos == NULL)
+        {
+          accnum_end_pos = r->args.data + r->args.len;
+        }
+        
+        
+        int lstpt_len = r->args.len - (accnum_end_pos - r->args.data);
+        char lstpt_part[lstpt_len+1];
+        ngx_memcpy(lstpt_part, (char *)accnum_end_pos, lstpt_len);
 
-          u_char * query_string;
+        query_string = ngx_pcalloc(r->pool,fstpt_len+accnum_arg_len+lstpt_len+1);
+        ngx_memcpy(query_string,fstpt_part,fstpt_len);
+        ngx_memcpy((query_string+fstpt_len),accnum_arg,accnum_arg_len);
+        ngx_memcpy((query_string+fstpt_len+accnum_arg_len),lstpt_part,lstpt_len);
+        
+      }
+  }
+  else
+  {
+    query_string = NULL;
+  }
 
-          if(r->args.len > 0) //if has args
-          {
-              // setting acctNum arg to inject
-              char accnum_arg[8+strlen(acctNum)+1];
-              ngx_memcpy(accnum_arg, "acctNum=", 8);
-              ngx_memcpy((accnum_arg+8), acctNum, strlen(acctNum)+1);
-              int accnum_arg_len = strlen(accnum_arg);
+  // ngx_str_t  uri;
+  ngx_str_t  args;
 
-              char * accnum_pos = ngx_strstr((char *)r->args.data, "acctNum=");
-              if(accnum_pos == NULL) // check if does not exist acctNum
-              { 
-                  //does not exist and need to be appended to the end
+    // uri.data = path;
+    // uri.len = ngx_strlen(path);
 
-                  int qs_len = r->args.len + accnum_arg_len+1;
-                  query_string = ngx_pcalloc(r->pool,qs_len+1);
-                  ngx_memcpy(query_string,r->args.data,r->args.len);
-                  *(query_string+r->args.len) = '&';
-                  ngx_memcpy((query_string+r->args.len+1),accnum_arg,accnum_arg_len);
-              }
-              else
-              {
-                int ftpt_len = accnum_pos - (char *)r->args.data;
-                char ftpt_part[ftpt_len+1];
-                ngx_memcpy(ftpt_part, (char *)r->args.data, ftpt_len);
+  //set args
+  if(query_string != NULL)
+  {
+    args.data = query_string;
+    args.len = ngx_strlen(query_string);
+  }
+  else
+  {
+    ngx_str_null(&args);
+  }
 
+  // const ngx_http_auth_jwt_loc_conf_t *conf;
+  // conf = ngx_http_get_module_loc_conf(r, ngx_http_auth_jwt_module);
 
-                query_string = ngx_pcalloc(r->pool,ftpt_len+accnum_arg_len+1);
-                ngx_memcpy(query_string,ftpt_part,ftpt_len);
-                ngx_memcpy((query_string+ftpt_len),accnum_arg,accnum_arg_len);
-              }
+  // ngx_http_variable_value_t  *v = ngx_http_get_indexed_variable(r,conf->acct_num_var_index);
+  // ngx_http_auth_jwt_vars_t * data = (ngx_http_auth_jwt_vars_t *)v->data;
 
-          }
-          else
-          {
-            query_string = NULL;
-          }
+  // data->authenticated = NGX_JWT_AUTHENTICATED;
 
-          ngx_str_t  uri;
-          ngx_str_t  args;
+  // (void) ngx_http_internal_redirect(r, &uri, &args);
 
-            uri.data = path;
-            uri.len = ngx_strlen(path);
+  
+  r->args = args;
 
-          // //set args
-          if(query_string != NULL)
-          {
-            args.data = query_string;
-            args.len = ngx_strlen(query_string);
-          }
-          else
-          {
-            ngx_str_null(&args);
-          }
-          
+  // ngx_http_finalize_request(r, NGX_DONE);
 
-          // ngx_str_set(&uri, path_parsed);
-          // ngx_str_set(&dummy, path);
-
-
-          const ngx_http_auth_jwt_loc_conf_t *conf;
-          conf = ngx_http_get_module_loc_conf(r, ngx_http_auth_jwt_module);
-
-          ngx_http_variable_value_t  *v = ngx_http_get_indexed_variable(r,conf->acct_num_var_index);
-          ngx_http_auth_jwt_vars_t * data = (ngx_http_auth_jwt_vars_t *)v->data;
-
-          data->authenticated = NGX_JWT_AUTHENTICATED;
-
-          (void) ngx_http_internal_redirect(r, &uri, &args);
-
-          ngx_http_finalize_request(r, NGX_DONE);
-          return NGX_DONE;
+  return NGX_OK;
 
 
 }
+
+static void ProcessAcctNumBodyRequest(ngx_http_request_t  *r){
+  
+  ngx_http_auth_jwt_ctx_t  *ctx;
+
+  ctx = ngx_http_get_module_ctx(r, ngx_http_auth_jwt_module);
+    
+
+  // // ngx_chain_t  *in;
+  // // u_char * p;
+  // // u_char * n = (u_char*)"a";
+  // // off_t p;
+
+  // ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: starting body processing ");
+
+  // // const ngx_http_auth_jwt_loc_conf_t *conf;
+  // // conf = ngx_http_get_module_loc_conf(r, ngx_http_auth_jwt_module);
+  // // ngx_http_variable_value_t  *v = ngx_http_get_indexed_variable(r,conf->acct_num_var_index);
+  // // ngx_http_auth_jwt_vars_t * data = (ngx_http_auth_jwt_vars_t *)v->data;
+
+  // // int len = 0;
+  // // int buffers_len = 0;
+  
+
+
+  // if(r->request_body->bufs->buf->in_file)
+  // {
+  //   ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: in_File = true");
+
+  //   // int len = r->request_body->bufs->buf->file_last - r->request_body->bufs->buf->file_pos;
+
+  //       size_t ret;
+  //       size_t offset = r->request_body->temp_file->file.offset - 100;
+  //       int p;
+  //       int chunk_len = 4096;
+  //       unsigned char frst_chunk[chunk_len];
+  //       // unsigned char scnd_chunk[chunk_len];
+  //       // unsigned char all_chunk[chunk_len*2];
+
+  //       ret = ngx_read_file(&r->request_body->temp_file->file, frst_chunk, chunk_len, offset);
+  //       offset = offset + ret;
+
+  //       for (p = 0; p < 100; p++) {
+  //           ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0,
+  //                          "catch body in:%O:%c", r->request_body->temp_file->file.offset+p, frst_chunk[p]);
+
+  //       }
+
+      if(r->request_body->bufs->buf->in_file)
+      {
+        ngx_temp_file_t *tf;
+        ngx_buf_t    *b;
+        ngx_chain_t * cl;
+
+        tf = ngx_pcalloc(r->pool, sizeof(ngx_temp_file_t));
+        tf->file.fd = NGX_INVALID_FILE;
+        tf->file.log = r->connection->log;
+        tf->path = r->request_body->temp_file->path;
+        tf->pool = r->pool;
+        tf->log_level = r->request_body_file_log_level;
+        tf->persistent = r->request_body_in_persistent_file;
+        tf->clean = r->request_body_in_clean_file;
+
+        ngx_create_temp_file(&tf->file, tf->path, tf->pool, tf->persistent, tf->clean, tf->access);
+
+        ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: scr length = %O",r->request_body->temp_file->file.offset );
+
+        RewriteRequestFromFile(&tf->file,&r->request_body->temp_file->file,ctx->acctNum,r->connection->log, r->pool);
+
+        r->request_body->temp_file = tf;
+
+        cl = ngx_chain_get_free_buf(r->pool, &r->request_body->free);
+        if (cl == NULL) {
+            ctx->status = NGX_HTTP_INTERNAL_SERVER_ERROR;
+            return;
+        }
+
+        b = cl->buf;
+
+        ngx_memzero(b, sizeof(ngx_buf_t));
+
+        b->in_file = 1;
+        b->file_last = r->request_body->temp_file->file.offset;
+        b->file = &r->request_body->temp_file->file;
+
+        r->request_body->bufs = cl;
+
+        ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: dst length = %O",r->request_body->temp_file->file.offset );
+        
+        r->headers_in.content_length_n = r->request_body->temp_file->file.offset;
+      }
+      else
+      {
+
+
+        ngx_chain_t  *in;
+        ngx_buf_t    *frst_buf;
+
+        
+
+        //invalidate any acctNum property
+        for (in = r->request_body->bufs; in; in = in->next) {
+        
+          u_char * accnum_pos = ngx_strnstr(in->buf->pos, "\"acctNum\"",in->buf->end- in->buf->start);
+          while(accnum_pos != NULL)
+          {
+            int startPos;
+            startPos = accnum_pos - in->buf->pos;
+
+            //replace property key
+            int p;
+            for(p = 1; p < 8; p++ )
+            {
+              *(in->buf->pos+startPos+p) = 'x';
+            }
+
+            accnum_pos = ngx_strnstr(in->buf->pos, "\"acctNum\"",in->buf->end- in->buf->start);
+
+          }
+        }
+
+        frst_buf = r->request_body->bufs->buf;
+        int frst_buf_len = frst_buf->end-frst_buf->start;
+
+        int beggining_len = 14+ngx_strlen(ctx->acctNum);
+        unsigned char *beggining = ngx_pcalloc(r->pool,beggining_len);
+        memcpy(beggining,"{\"acctNum\":\"",12);
+        memcpy(beggining+12,ctx->acctNum,ngx_strlen(ctx->acctNum));
+        *(beggining+beggining_len-2) = '\"';
+        *(beggining+beggining_len-1) = ',';
+
+        int new_buf_Len = frst_buf_len+beggining_len-1;
+        unsigned char * new_buf = ngx_pcalloc(r->pool,new_buf_Len );
+        ngx_memcpy(new_buf,beggining,beggining_len);
+        ngx_memcpy(new_buf + beggining_len,frst_buf->start+1,frst_buf_len-1);
+
+        frst_buf->start = new_buf;
+        frst_buf->end = new_buf+new_buf_Len;
+        frst_buf->pos = new_buf;
+        frst_buf->last = new_buf+new_buf_Len;
+
+        r->headers_in.content_length_n = r->headers_in.content_length_n+beggining_len-1;
+
+      }
+
+
+  // ngx_int_t     rc;
+  // ngx_buf_t    *b;
+  // 
+  // off_t         len;
+
+  // // ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: start finishing");
+  // // len = 0;
+
+  // // for (in = r->request_body->bufs; in; in = in->next) {
+  // //       len += ngx_buf_size(in->buf);
+  // //   }
+
+  // //   b = ngx_create_temp_buf(r->pool, NGX_OFF_T_LEN);
+  // //   if (b == NULL) {
+  // //       ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
+  // //       return;
+  // //   }
+  // //   out.buf = b;
+  // //   out.next = NULL;
+
+  // //   b->last = ngx_sprintf(b->pos, "%O", len);
+  // //   b->last_buf = (r == r->main) ? 1: 0;
+  // //   b->last_in_chain = 1;
+
+  // //   r->headers_out.status = NGX_HTTP_OK;
+  // //   r->headers_out.content_length_n = b->last - b->pos;
+
+  // // rc = ngx_http_send_header(r);
+  // // rc = ngx_http_output_filter(r, &out);
+  // // ngx_http_finalize_request(r, rc);
+
+
+
+
+
+
+
+
+
+
+
+
+  // // for (in = r->request_body->bufs; in; in = in->next) {
+  // //       ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: body reading -> %02x",in->buf->pos);
+  // //       buffers_len++;
+  // //       p = in->buf->pos;
+  // //       // n = p;
+  // //       for (p = in->buf->pos; p < in->buf->last; p++) {
+  // //           len++;
+  // //           ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0,
+  // //                          "catch body in:%02Xd:%c", *p, *p);
+
+  // //       }
+
+
+  // //       // inbuf = in->buf->pos;
+  // //   }
+  // // }
+
+  //   // ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0,
+  //   //                        "buffers in chain -> %d", buffers_len);
+  //   // ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0,
+  //   //                        "body len -> %d", len);
+
+  //   ngx_str_t randomstr = ngx_string("{\"asd\":\"bleble\"}");
+  //   u_char *bodytogo = ngx_pcalloc(r->pool,randomstr.len+1);
+  //   ngx_memcpy(bodytogo,randomstr.data,randomstr.len);
+
+
+  //   ngx_buf_t *b;
+  //   b = ngx_create_temp_buf(r->pool,randomstr.len);
+
+  //   b->last = (u_char*)ngx_cpymem(b->pos, randomstr.data, randomstr.len);
+
+  //   r->request_body->bufs[0].buf = b;
+  //   r->headers_in.content_length_n = randomstr.len;
+
+  // char *abav = ParseAndGetJsonString(r->connection->log, (char*)inbuf,"abav");
+
+  // json_error_t error;
+  // json_t *root =  json_loads((char *)inbuf, 0, &error);
+  // json_t* newabav = json_object_get(root,"abav");
+  // const char * res = json_string_value(newabav);
+
+  // ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: abav parsed -> %s",res);
+  // json_t *acctNumP = json_string((char *)data->acctNum.data);
+  // json_object_set(root,"acctNum",acctNumP);
+  // u_char *rep = (u_char*)json_dumps(root,0);
+  // ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: json representation =  %s ", rep);
+
+
+  // // ngx_int_t     rc;
+  // ngx_buf_t    *b;
+  // // ngx_chain_t   out;
+
+  // b = ngx_create_temp_buf(r->pool, NGX_OFF_T_LEN);
+  //   if (b == NULL) {
+  //       ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
+  //       return;
+  //   }
+  // ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: working 1");
+
+  //   u_char * test = (u_char *)"{\"test\":\"blabla\"}";
+  //   ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: json test = %s", test);
+
+  //   b->last_buf = (r == r->main) ? 1: 0;
+  //   b->last_in_chain = 1;
+  //   b->pos = test;
+  //   b->last = test + ngx_strlen(test);
+
+  //   ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: working 2 ");
+
+  //   // rc = ngx_http_send_header(r);
+
+  //   // out.buf = b;
+  //   // out.next = NULL;
+
+  //   r->request_body->bufs->buf = b;
+
+
+  ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: FINALIZING ");
+
+  
+
+  ctx->status = NGX_OK;
+
+
+  r->write_event_handler = ngx_http_core_run_phases;
+  ngx_http_core_run_phases(r);
+
+  return;
+
+}
+
+
+void RewriteRequestFromFile(ngx_file_t *dst,ngx_file_t *src, u_char * acctNum, ngx_log_t *log, ngx_pool_t *pool ){
+
+        size_t ret;
+        size_t scr_offset = 1;
+        size_t dst_offset = 0;
+        int chunk_len = 4096;
+        unsigned char * frst_chunk = ngx_pcalloc(pool, chunk_len);
+        int frst_c_len = 0;
+        unsigned char * lst_chunk = ngx_pcalloc(pool, chunk_len);
+        int lst_c_len = 0;
+        unsigned char *cbn_chunk = ngx_pcalloc(pool,1);
+        int cbn_c_length = 0;
+
+        int beggining_len = 14+ngx_strlen(acctNum);
+        unsigned char *beggining = ngx_pcalloc(pool,beggining_len);
+        memcpy(beggining,"{\"acctNum\":\"",12);
+        memcpy(beggining+12,acctNum,ngx_strlen(acctNum));
+        *(beggining+beggining_len-2) = '\"';
+        *(beggining+beggining_len-1) = ',';
+
+        ngx_write_file(dst,beggining,beggining_len,dst_offset);
+        dst_offset = dst_offset + beggining_len;
+
+
+        ret = ngx_read_file(src, frst_chunk, chunk_len, scr_offset);
+        scr_offset = scr_offset + ret;
+        frst_c_len = ret;
+        
+
+        for(;;)
+        {
+          //get new data chunk
+          ret = ngx_read_file(src, lst_chunk, chunk_len, scr_offset);
+          scr_offset = scr_offset + ret;
+          lst_c_len = ret;
+
+          ngx_pfree(pool,cbn_chunk);
+          cbn_c_length = frst_c_len+ lst_c_len;
+          cbn_chunk = ngx_pcalloc(pool, cbn_c_length);
+          ngx_memcpy(cbn_chunk,frst_chunk,frst_c_len);
+          ngx_memcpy(cbn_chunk + frst_c_len,lst_chunk,lst_c_len);
+
+          
+          if(ret <= 0)
+          {
+            break;
+          }
+          
+            
+
+          char * accnum_pos = ngx_strstr(cbn_chunk, "\"acctNum\"");
+          while(accnum_pos != NULL)
+          {
+            int startPos;
+            startPos = accnum_pos - (char *)cbn_chunk;
+            ngx_log_error(NGX_LOG_DEBUG,log, 0, "JWT: found acctNum at offset %O",scr_offset-(frst_c_len+lst_c_len)+startPos);
+
+            //replace property key
+            int p;
+            for(p = 1; p < 8; p++ )
+            {
+              *(cbn_chunk+startPos+p) = 'x';
+            }
+
+
+            ngx_memcpy(frst_chunk,cbn_chunk,frst_c_len);
+            ngx_memcpy(lst_chunk,cbn_chunk + frst_c_len,lst_c_len);
+
+            accnum_pos = ngx_strstr(cbn_chunk, "\"acctNum\"");
+
+          }
+
+
+          ngx_write_file(dst,frst_chunk,frst_c_len,dst_offset);
+          dst_offset = dst_offset + frst_c_len;
+          
+          ngx_memcpy(frst_chunk,lst_chunk,lst_c_len);
+          frst_c_len = lst_c_len;
+
+
+        }
+
+        ngx_write_file(dst,frst_chunk,frst_c_len,dst_offset);
+        dst_offset = dst_offset + frst_c_len;
+
+        ngx_memcpy(frst_chunk,lst_chunk,lst_c_len);
+        frst_c_len = lst_c_len;
+
+        ngx_write_file(dst,lst_chunk,lst_c_len,dst_offset);
+        dst_offset = dst_offset + lst_c_len;
+
+        return;
+
+
+}
+
+
+
+
 
 
 
