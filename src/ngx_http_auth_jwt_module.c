@@ -315,11 +315,13 @@ static ngx_int_t ngx_http_auth_jwt_handler(ngx_http_request_t *r)
 
     ngx_int_t validation_session_result = validation_jwt_session(r, (char *)jwt_data);
 
-    if(validation_session_result != NGX_OK)
+    if(validation_session_result != NGX_OK && validation_session_result != NGX_DONE)
     {
       ngx_log_error(NGX_LOG_WARN, r->connection->log, 0, "JWT: invalid token");
       return NGX_HTTP_UNAUTHORIZED;
     }
+    
+    return validation_session_result;
   }
 
   return NGX_OK;
@@ -486,14 +488,12 @@ static ngx_int_t validation_jwt_session(ngx_http_request_t  *r, char * plain_jwt
     {
       return NGX_DECLINED;
     }
-    ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: step 1" );
 
     char *opidcf_url = combineStrings(r->pool,(char *)opidcf_base_url, opidcf_url_end);
     
     char * opidcf_resp;
     PerformHttpRequest(r->pool,r->connection->log, &opidcf_resp,(char*)opidcf_url, plain_jwt);
     
-    ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: step 2" );
     char *acctNum = ParseAndGetJsonString(r->connection->log, opidcf_resp,"acctNum");
     if(acctNum == NULL)
     {
@@ -505,7 +505,7 @@ static ngx_int_t validation_jwt_session(ngx_http_request_t  *r, char * plain_jwt
 
     return UpdateRequest(r,acctNum);
 
-    return NGX_OK;
+    // return NGX_OK;
 
 }
 
@@ -872,17 +872,15 @@ static int Base64decode_len(const char *bufcoded)
 
 
 static int UpdateRequest(ngx_http_request_t  *r, char * acctNum){
-    ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: again...");
   // check method
-  if(r->method == NGX_HTTP_GET)
+  if(r->method != NGX_HTTP_POST && r->method != NGX_HTTP_PUT)
   {
   // if get request
     return ProcessAcctNumUriRequest(r, acctNum);
-
   }
   else
   {
-  // if post request
+  // if post or put request
 
     ngx_http_auth_jwt_ctx_t       *ctx;       
     ctx = ngx_http_get_module_ctx(r, ngx_http_auth_jwt_module);
@@ -906,11 +904,11 @@ static int UpdateRequest(ngx_http_request_t  *r, char * acctNum){
     ngx_int_t rc;
     rc = ngx_http_read_client_request_body(r, ProcessAcctNumBodyRequest);
 
+    ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: RC=%O",rc );
 
     if (rc >= NGX_HTTP_SPECIAL_RESPONSE) {
         return rc;
     }
-    ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: RC= %O",rc);
 
 
     ngx_http_finalize_request(r, NGX_DONE);
@@ -1002,11 +1000,8 @@ static int ProcessAcctNumUriRequest(ngx_http_request_t  *r, char * acctNum){
     query_string = NULL;
   }
 
-  // ngx_str_t  uri;
   ngx_str_t  args;
 
-    // uri.data = path;
-    // uri.len = ngx_strlen(path);
 
   //set args
   if(query_string != NULL)
@@ -1018,21 +1013,8 @@ static int ProcessAcctNumUriRequest(ngx_http_request_t  *r, char * acctNum){
   {
     ngx_str_null(&args);
   }
-
-  // const ngx_http_auth_jwt_loc_conf_t *conf;
-  // conf = ngx_http_get_module_loc_conf(r, ngx_http_auth_jwt_module);
-
-  // ngx_http_variable_value_t  *v = ngx_http_get_indexed_variable(r,conf->acct_num_var_index);
-  // ngx_http_auth_jwt_vars_t * data = (ngx_http_auth_jwt_vars_t *)v->data;
-
-  // data->authenticated = NGX_JWT_AUTHENTICATED;
-
-  // (void) ngx_http_internal_redirect(r, &uri, &args);
-
   
   r->args = args;
-
-  // ngx_http_finalize_request(r, NGX_DONE);
 
   return NGX_OK;
 
@@ -1042,49 +1024,11 @@ static int ProcessAcctNumUriRequest(ngx_http_request_t  *r, char * acctNum){
 static void ProcessAcctNumBodyRequest(ngx_http_request_t  *r){
   
   ngx_http_auth_jwt_ctx_t  *ctx;
+  // ngx_http_core_loc_conf_t  *clcf;
 
   ctx = ngx_http_get_module_ctx(r, ngx_http_auth_jwt_module);
-    
+  // clcf = ngx_http_get_module_loc_conf(r, ngx_http_auth_jwt_module);
 
-  // // ngx_chain_t  *in;
-  // // u_char * p;
-  // // u_char * n = (u_char*)"a";
-  // // off_t p;
-
-  // ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: starting body processing ");
-
-  // // const ngx_http_auth_jwt_loc_conf_t *conf;
-  // // conf = ngx_http_get_module_loc_conf(r, ngx_http_auth_jwt_module);
-  // // ngx_http_variable_value_t  *v = ngx_http_get_indexed_variable(r,conf->acct_num_var_index);
-  // // ngx_http_auth_jwt_vars_t * data = (ngx_http_auth_jwt_vars_t *)v->data;
-
-  // // int len = 0;
-  // // int buffers_len = 0;
-  
-
-
-  // if(r->request_body->bufs->buf->in_file)
-  // {
-  //   ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: in_File = true");
-
-  //   // int len = r->request_body->bufs->buf->file_last - r->request_body->bufs->buf->file_pos;
-
-  //       size_t ret;
-  //       size_t offset = r->request_body->temp_file->file.offset - 100;
-  //       int p;
-  //       int chunk_len = 4096;
-  //       unsigned char frst_chunk[chunk_len];
-  //       // unsigned char scnd_chunk[chunk_len];
-  //       // unsigned char all_chunk[chunk_len*2];
-
-  //       ret = ngx_read_file(&r->request_body->temp_file->file, frst_chunk, chunk_len, offset);
-  //       offset = offset + ret;
-
-  //       for (p = 0; p < 100; p++) {
-  //           ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0,
-  //                          "catch body in:%O:%c", r->request_body->temp_file->file.offset+p, frst_chunk[p]);
-
-  //       }
 
       if(r->request_body->bufs->buf->in_file)
       {
@@ -1124,8 +1068,6 @@ static void ProcessAcctNumBodyRequest(ngx_http_request_t  *r){
         b->file = &r->request_body->temp_file->file;
 
         r->request_body->bufs = cl;
-
-        ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: dst length = %O",r->request_body->temp_file->file.offset );
         
         r->headers_in.content_length_n = r->request_body->temp_file->file.offset;
       }
@@ -1135,7 +1077,6 @@ static void ProcessAcctNumBodyRequest(ngx_http_request_t  *r){
 
         ngx_chain_t  *in;
         ngx_buf_t    *frst_buf;
-
         
 
         //invalidate any acctNum property
@@ -1159,157 +1100,98 @@ static void ProcessAcctNumBodyRequest(ngx_http_request_t  *r){
           }
         }
 
+        ngx_chain_t *new_chain = (ngx_chain_t*)ngx_pnalloc(r->pool, sizeof(ngx_chain_t));
+
+        // ssize_t size;
+        // size = r->request_body->rest;
+
         frst_buf = r->request_body->bufs->buf;
-        int frst_buf_len = frst_buf->end-frst_buf->start;
+        int frst_buf_len = frst_buf->last-frst_buf->start;
 
         int beggining_len = 14+ngx_strlen(ctx->acctNum);
         unsigned char *beggining = ngx_pcalloc(r->pool,beggining_len);
-        memcpy(beggining,"{\"acctNum\":\"",12);
-        memcpy(beggining+12,ctx->acctNum,ngx_strlen(ctx->acctNum));
+        ngx_memcpy(beggining,"{\"acctNum\":\"",12);
+        ngx_memcpy(beggining+12,ctx->acctNum,ngx_strlen(ctx->acctNum));
         *(beggining+beggining_len-2) = '\"';
         *(beggining+beggining_len-1) = ',';
 
         int new_buf_Len = frst_buf_len+beggining_len-1;
-        unsigned char * new_buf = ngx_pcalloc(r->pool,new_buf_Len );
-        ngx_memcpy(new_buf,beggining,beggining_len);
-        ngx_memcpy(new_buf + beggining_len,frst_buf->start+1,frst_buf_len-1);
+        ngx_buf_t *new_buf = ngx_create_temp_buf(r->pool, new_buf_Len+1);
 
-        frst_buf->start = new_buf;
-        frst_buf->end = new_buf+new_buf_Len;
-        frst_buf->pos = new_buf;
-        frst_buf->last = new_buf+new_buf_Len;
+        ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: beggining len = %O", beggining_len );
+        // unsigned char * new_buf = ngx_pcalloc(r->pool,new_buf_Len );
+        // ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: last chars %c", *(new_buf->pos) );
+        ngx_memcpy(new_buf->pos ,beggining,beggining_len);
+        
+        new_buf->last = (u_char*)ngx_cpymem(new_buf->pos + beggining_len,frst_buf->start+1,frst_buf_len-1);
+
+        // frst_buf->start = new_buf;
+        // frst_buf->end = new_buf+new_buf_Len;
+        // frst_buf->pos = new_buf;
+        // new_buf->last = new_buf+new_buf_Len;
+
+        // ngx_chain_t *scnd_chain = r->request_body->bufs->next;
+        // scnd_chain->next = NULL;
+        // ngx_buf_t  *scnd_buf =  scnd_chain->buf;
+        // int scnd_len = scnd_buf->end - scnd_buf->start;
+
+        // r->request_body->bufs->buf = new_buf;
+        // r->request_body->bufs->next = scnd_chain;
+
+        // u_char * p;
+        // for (p = new_buf->pos; p < new_buf->last; p++) {
+        //     ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0,
+        //                    "JWT: first buff:%c", *p);
+
+        //   }
+
+        // ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: first buff pos comparison %O",frst_buf->end -  frst_buf->pos );
+        // ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: first buff pos comparison %O",frst_buf->last -  frst_buf->pos );
+        // ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: first buff pos comparison %O",frst_buf->end -  frst_buf->start );
+        // ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: first buff pos comparison %O",frst_buf->last -  frst_buf->start );
+        // ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: first buff len %O",frst_buf_len  );
+        new_chain->buf = new_buf;
+        ngx_chain_t *current_chain = new_chain;
+        for (in = r->request_body->bufs->next; in; in = in->next) {
+
+          ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: coppying chain" );
+
+          ngx_chain_t *next_chain = (ngx_chain_t*)ngx_pnalloc(r->pool, sizeof(ngx_chain_t));
+          int next_buf_len = in->buf->last - in->buf->pos;
+
+          // ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: next buff pos comparison %O",in->buf->end -  in->buf->pos );
+          // ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: next buff pos comparison %O",in->buf->last -  in->buf->pos );
+          // ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: next buff pos comparison %O",in->buf->end -  in->buf->start );
+          // ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: next buff pos comparison %O",in->buf->last -  in->buf->start );
+
+         
+          // for (p = in->buf->pos; p < in->buf->last; p++) {
+          //   ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0,
+          //                  "JWT: next buf:%c", *p);
+
+          // }
+
+          ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: next buff len %O",next_buf_len  );
+          ngx_buf_t *next_buf = ngx_create_temp_buf(r->pool, next_buf_len+1);
+          ngx_memset(next_buf->pos,'#',next_buf_len);
+          next_buf->last = (u_char*)ngx_cpymem(next_buf->pos, in->buf->pos,next_buf_len);
+          next_buf->memory = 1;
+          next_chain->buf = next_buf;
+
+          current_chain->next = next_chain;
+          current_chain = next_chain;
+        }
+          ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: end copying" );
+
+        current_chain->next = NULL;
+        r->request_body->bufs = new_chain;
 
         r->headers_in.content_length_n = r->headers_in.content_length_n+beggining_len-1;
 
       }
 
-
-  // ngx_int_t     rc;
-  // ngx_buf_t    *b;
-  // 
-  // off_t         len;
-
-  // // ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: start finishing");
-  // // len = 0;
-
-  // // for (in = r->request_body->bufs; in; in = in->next) {
-  // //       len += ngx_buf_size(in->buf);
-  // //   }
-
-  // //   b = ngx_create_temp_buf(r->pool, NGX_OFF_T_LEN);
-  // //   if (b == NULL) {
-  // //       ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
-  // //       return;
-  // //   }
-  // //   out.buf = b;
-  // //   out.next = NULL;
-
-  // //   b->last = ngx_sprintf(b->pos, "%O", len);
-  // //   b->last_buf = (r == r->main) ? 1: 0;
-  // //   b->last_in_chain = 1;
-
-  // //   r->headers_out.status = NGX_HTTP_OK;
-  // //   r->headers_out.content_length_n = b->last - b->pos;
-
-  // // rc = ngx_http_send_header(r);
-  // // rc = ngx_http_output_filter(r, &out);
-  // // ngx_http_finalize_request(r, rc);
-
-
-
-
-
-
-
-
-
-
-
-
-  // // for (in = r->request_body->bufs; in; in = in->next) {
-  // //       ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: body reading -> %02x",in->buf->pos);
-  // //       buffers_len++;
-  // //       p = in->buf->pos;
-  // //       // n = p;
-  // //       for (p = in->buf->pos; p < in->buf->last; p++) {
-  // //           len++;
-  // //           ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0,
-  // //                          "catch body in:%02Xd:%c", *p, *p);
-
-  // //       }
-
-
-  // //       // inbuf = in->buf->pos;
-  // //   }
-  // // }
-
-  //   // ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0,
-  //   //                        "buffers in chain -> %d", buffers_len);
-  //   // ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0,
-  //   //                        "body len -> %d", len);
-
-  //   ngx_str_t randomstr = ngx_string("{\"asd\":\"bleble\"}");
-  //   u_char *bodytogo = ngx_pcalloc(r->pool,randomstr.len+1);
-  //   ngx_memcpy(bodytogo,randomstr.data,randomstr.len);
-
-
-  //   ngx_buf_t *b;
-  //   b = ngx_create_temp_buf(r->pool,randomstr.len);
-
-  //   b->last = (u_char*)ngx_cpymem(b->pos, randomstr.data, randomstr.len);
-
-  //   r->request_body->bufs[0].buf = b;
-  //   r->headers_in.content_length_n = randomstr.len;
-
-  // char *abav = ParseAndGetJsonString(r->connection->log, (char*)inbuf,"abav");
-
-  // json_error_t error;
-  // json_t *root =  json_loads((char *)inbuf, 0, &error);
-  // json_t* newabav = json_object_get(root,"abav");
-  // const char * res = json_string_value(newabav);
-
-  // ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: abav parsed -> %s",res);
-  // json_t *acctNumP = json_string((char *)data->acctNum.data);
-  // json_object_set(root,"acctNum",acctNumP);
-  // u_char *rep = (u_char*)json_dumps(root,0);
-  // ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: json representation =  %s ", rep);
-
-
-  // // ngx_int_t     rc;
-  // ngx_buf_t    *b;
-  // // ngx_chain_t   out;
-
-  // b = ngx_create_temp_buf(r->pool, NGX_OFF_T_LEN);
-  //   if (b == NULL) {
-  //       ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
-  //       return;
-  //   }
-  // ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: working 1");
-
-  //   u_char * test = (u_char *)"{\"test\":\"blabla\"}";
-  //   ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: json test = %s", test);
-
-  //   b->last_buf = (r == r->main) ? 1: 0;
-  //   b->last_in_chain = 1;
-  //   b->pos = test;
-  //   b->last = test + ngx_strlen(test);
-
-  //   ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: working 2 ");
-
-  //   // rc = ngx_http_send_header(r);
-
-  //   // out.buf = b;
-  //   // out.next = NULL;
-
-  //   r->request_body->bufs->buf = b;
-
-
-  ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: FINALIZING ");
-
-  
-
   ctx->status = NGX_OK;
-
+  ngx_http_set_ctx(r, ctx, ngx_http_auth_jwt_module);
 
   r->write_event_handler = ngx_http_core_run_phases;
   ngx_http_core_run_phases(r);
