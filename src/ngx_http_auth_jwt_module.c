@@ -30,6 +30,10 @@ struct MemoryStruct {
   size_t size;
 };
 
+typedef struct {
+  ngx_int_t authenticated;
+} ngx_http_auth_jwt_vars_t;
+
 typedef struct jwk_key {
     unsigned char * n;
     int nLen;
@@ -64,6 +68,7 @@ static void RewriteRequestFromFile(ngx_file_t *dst,ngx_file_t *src, u_char *acct
 
 // Configuration functions
 static ngx_int_t ngx_http_auth_jwt_init(ngx_conf_t *cf);
+static ngx_int_t ngx_http_auth_jwt_init_vars(ngx_conf_t *cf);
 static void * ngx_http_auth_jwt_create_conf(ngx_conf_t *cf);
 static char * ngx_http_auth_jwt_merge_conf(ngx_conf_t *cf, void *parent, void *child);
 static char * ngx_conf_set_jwt_validation_flag(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
@@ -153,13 +158,17 @@ static char * ngx_conf_set_jwt_validation_flag(ngx_conf_t *cf, ngx_command_t *cm
     *flag = NGX_CONF_UNSET;
   }
 
+  ngx_str_t name = ngx_string("auth");
+  ngx_int_t *act_num = &ajcf->acct_num_var_index;
+  *act_num = ngx_http_get_variable_index(cf, &name);
+
   return NGX_CONF_OK;
 }
 
 
 
 static ngx_http_module_t ngx_http_auth_jwt_module_ctx = {
-  NULL, /* preconfiguration */
+  ngx_http_auth_jwt_init_vars, /* preconfiguration */
   ngx_http_auth_jwt_init,      /* postconfiguration */
 
   NULL,                        /* create main configuration */
@@ -187,6 +196,40 @@ ngx_module_t ngx_http_auth_jwt_module = {
   NGX_MODULE_V1_PADDING
 };
 
+static ngx_int_t
+ngx_http_variable_connection(ngx_http_request_t *r,
+    ngx_http_variable_value_t *v, uintptr_t data)
+{
+
+    ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: variable getting handler");
+    u_char  *p;
+
+    p = ngx_pnalloc(r->pool, sizeof(ngx_http_auth_jwt_vars_t));
+    if (p == NULL) {
+        return NGX_ERROR;
+    }
+
+    ((ngx_http_auth_jwt_vars_t *)p)->authenticated = NGX_JWT_NOT_AUTHENTICATED;
+
+    v->len = 1;
+    v->valid = 1;
+    v->no_cacheable = 0;
+    v->not_found = 0;
+    v->data = p;
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t ngx_http_auth_jwt_init_vars(ngx_conf_t *cf)
+{
+  ngx_str_t  name = ngx_string("auth");
+
+  ngx_http_variable_t  * v = ngx_http_add_variable(cf,&name ,NGX_HTTP_VAR_CHANGEABLE);
+  v ->get_handler = ngx_http_variable_connection;
+
+  return NGX_OK;
+}
 
 
 static ngx_int_t ngx_http_auth_jwt_init(ngx_conf_t *cf)
@@ -241,29 +284,24 @@ static ngx_int_t ngx_http_auth_jwt_handler(ngx_http_request_t *r)
 {
 
     ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: STARTING...");
-
-  // ngx_str_t newuri = ngx_string("acctNum=260001-1221680325&company=paragonmeds&customerId=99999");
-  // r->args = newuri;
-
-  // return NGX_OK;
     
     const ngx_http_auth_jwt_loc_conf_t *conf;
     conf = ngx_http_get_module_loc_conf(r, ngx_http_auth_jwt_module);
 
-    // ngx_http_variable_value_t  *v = ngx_http_get_indexed_variable(r,conf->acct_num_var_index);
-    // ngx_http_auth_jwt_vars_t * data = (ngx_http_auth_jwt_vars_t *)v->data;
+    ngx_http_variable_value_t  *v = ngx_http_get_indexed_variable(r,conf->acct_num_var_index);
+    ngx_http_auth_jwt_vars_t * data = (ngx_http_auth_jwt_vars_t *)v->data;
 
-    // ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: var data = %d", data->authenticated);
-    // if(r->uri.len > 0)
-    // ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: uri requested = %s", r->uri.data);
-    // if(r->args.len > 0)
-    // ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: args requested = %s", r->args.data);
+    ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: var data = %d", data->authenticated);
+    if(r->uri.len > 0)
+    ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: uri requested = %s", r->uri.data);
+    if(r->args.len > 0)
+    ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: args requested = %s", r->args.data);
 
-    // if(data->authenticated > 0)
-    // {
-    //   ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: ending the request");
-    //   return NGX_OK;
-    // }
+    if(data->authenticated > 0)
+    {
+      ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: ending the request");
+      return NGX_DECLINED;
+    }
   
     u_char *jwt_data;
 
@@ -280,7 +318,6 @@ static ngx_int_t ngx_http_auth_jwt_handler(ngx_http_request_t *r)
   if (conf->jwt_validation_flag == NGX_JWT_VALIDATION_OFF)
   {
 
-    return UpdateRequest(r,"123-4-0006");
     ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: flag is off");
     return NGX_DECLINED;
 
@@ -872,26 +909,30 @@ static int Base64decode_len(const char *bufcoded)
 
 
 static int UpdateRequest(ngx_http_request_t  *r, char * acctNum){
+
+  ngx_http_auth_jwt_ctx_t       *ctx;       
+  ctx = ngx_http_get_module_ctx(r, ngx_http_auth_jwt_module);
+
+  if (ctx) {
+      return ctx->status;
+  }
+  ctx = ngx_pcalloc(r->pool, sizeof(ngx_http_auth_jwt_ctx_t));
+  if (ctx == NULL) {
+      return NGX_ERROR;
+  }
+
   // check method
   if(r->method != NGX_HTTP_POST && r->method != NGX_HTTP_PUT)
   {
-  // if get request
+    // if get request
+    ctx->status = NGX_OK;
+    ngx_http_set_ctx(r, ctx, ngx_http_auth_jwt_module);
+
     return ProcessAcctNumUriRequest(r, acctNum);
   }
   else
   {
   // if post or put request
-
-    ngx_http_auth_jwt_ctx_t       *ctx;       
-    ctx = ngx_http_get_module_ctx(r, ngx_http_auth_jwt_module);
-
-    if (ctx) {
-        return ctx->status;
-    }
-    ctx = ngx_pcalloc(r->pool, sizeof(ngx_http_auth_jwt_ctx_t));
-    if (ctx == NULL) {
-        return NGX_ERROR;
-    }
 
     ctx->status = NGX_DONE;
     
@@ -925,17 +966,19 @@ static int ProcessAcctNumUriRequest(ngx_http_request_t  *r, char * acctNum){
   
 
   u_char * path;
+  int path_len;
 
   char * query_string_start = strstr((char *)r->uri.data, "?");
   if(query_string_start != NULL) //has queryString
   {
-    int path_len = query_string_start - (char *)r->uri.data;
+    path_len = query_string_start - (char *)r->uri.data;
     path = ngx_pcalloc(r->pool,path_len+1);
     ngx_memcpy(path, (char *)r->uri.data, path_len);
   }
   else
   {
-    path = ngx_pcalloc(r->pool,r->uri.len+1);
+    path_len = r->uri.len;
+    path = ngx_pcalloc(r->pool,path_len);
     ngx_memcpy(path, (char *)r->uri.data, r->uri.len);
   }
 
@@ -952,6 +995,7 @@ static int ProcessAcctNumUriRequest(ngx_http_request_t  *r, char * acctNum){
       char * accnum_pos = ngx_strstr((char *)r->args.data, "acctNum=");
       if(accnum_pos == NULL) // check if does not exist acctNum
       { 
+          ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: acctNum doesnt exist");
           //does not exist and need to be appended to the end
 
           int qs_len = r->args.len + accnum_arg_len+1;
@@ -963,7 +1007,7 @@ static int ProcessAcctNumUriRequest(ngx_http_request_t  *r, char * acctNum){
       else
       {
         // acctNum exist and needs to be replaced to assure it has the correct value
-
+        ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: acctNum exist");
         int fstpt_len = accnum_pos - (char *)r->args.data;
         char fstpt_part[fstpt_len+1];
         ngx_memcpy(fstpt_part, (char *)r->args.data, fstpt_len);
@@ -1000,8 +1044,12 @@ static int ProcessAcctNumUriRequest(ngx_http_request_t  *r, char * acctNum){
     query_string = NULL;
   }
 
+
+  // ngx_str_t  uri;
   ngx_str_t  args;
 
+  // uri.data = path;
+  // uri.len = ngx_strlen(path);
 
   //set args
   if(query_string != NULL)
@@ -1013,9 +1061,30 @@ static int ProcessAcctNumUriRequest(ngx_http_request_t  *r, char * acctNum){
   {
     ngx_str_null(&args);
   }
-  
+
   r->args = args;
 
+  // ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: uri length:%O", r->uri_end - r->uri_start);
+  // ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0, "JWT: args length:%O", r->uri_end - r->args_start);
+
+  // u_char * p;
+  // for (p = r->uri_start; p < r->uri_end; p++) {
+  //     ngx_log_error(NGX_LOG_DEBUG, r->connection->log, 0,
+  //                     "JWT: uri:%c", *p);
+
+  //   }
+
+  // const ngx_http_auth_jwt_loc_conf_t *conf;
+  // conf = ngx_http_get_module_loc_conf(r, ngx_http_auth_jwt_module);
+
+  // ngx_http_variable_value_t  *v = ngx_http_get_indexed_variable(r,conf->acct_num_var_index);
+  // ngx_http_auth_jwt_vars_t * data = (ngx_http_auth_jwt_vars_t *)v->data;
+
+  // data->authenticated = NGX_JWT_AUTHENTICATED;
+
+  // (void) ngx_http_internal_redirect(r, &uri, &args);
+
+  // ngx_http_finalize_request(r, NGX_DONE);
   return NGX_OK;
 
 
